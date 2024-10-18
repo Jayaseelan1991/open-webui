@@ -8,6 +8,10 @@ elif VECTOR_DB == "qdrant":
     from open_webui.apps.retrieval.vector.dbs.qdrant import QdrantClient
 
     VECTOR_DB_CLIENT = QdrantClient()
+elif VECTOR_DB == "pgvector":
+    from open_webui.apps.retrieval.vector.dbs.pgvector import PgvectorClient
+
+    VECTOR_DB_CLIENT = PgvectorClient()
 else:
     from open_webui.apps.retrieval.vector.dbs.chroma import ChromaClient
 

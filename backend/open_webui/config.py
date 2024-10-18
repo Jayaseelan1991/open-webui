@@ -957,6 +957,10 @@ MILVUS_URI = os.environ.get("MILVUS_URI", f"{DATA_DIR}/vector_db/milvus.db")
 # Qdrant
 QDRANT_URI = os.environ.get("QDRANT_URI", None)
 
+# pgvector
+PGVECTOR_URI = os.environ.get("PGVECTOR_URI", None)
+PGVECTOR_CONNECTION_POOL_SIZE = int(os.environ.get("PGVECTOR_CONNECTION_POOL_SIZE", 10))
+
 ####################################
 # Information Retrieval (RAG)
 ####################################
