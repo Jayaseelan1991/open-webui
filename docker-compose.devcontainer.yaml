@@ -3,7 +3,7 @@ services:
   postgres:
     image: pgvector/pgvector:0.7.4-pg17
     volumes:
-      - ./pg_data:/var/lib/postgresql/data
+      - ./backend/data/pg_data:/var/lib/postgresql/data
     environment:
       POSTGRES_DB: ${POSTGRES_DB-openwebui}
       POSTGRES_USER: ${POSTGRES_USER-openwebui}
@@ -17,7 +17,7 @@ services:
 
   ollama:
     volumes:
-      - ./ollama:/root/.ollama
+      - ./backend/data/ollama:/root/.ollama
     environment:
       OLLAMA_NUM_THREADS: "${OLLAMA_NUM_THREADS-2}"
     pull_policy: if_not_present
@@ -73,14 +73,11 @@ services:
       WEBUI_AUTH: "False"
       WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY-tQD5RHiU42ubYJ1SeRn1}"
       DATABASE_URL: "postgresql://${POSTGRES_USER-openwebui}:${POSTGRES_PASSWORD-openwebui}@postgres/${POSTGRES_DB-openwebui}"
-      PGVECTOR_URI: "postgresql://${POSTGRES_USER-openwebui}:${POSTGRES_PASSWORD-openwebui}@postgres/${POSTGRES_DB-openwebui}_vectordb"
       VECTOR_DB: pgvector
     restart: unless-stopped
 
 configs:
   pgvector_init:
     content: |
-      CREATE DATABASE ${POSTGRES_DB-openwebui}_vectordb;
-      GRANT ALL PRIVILEGES ON DATABASE ${POSTGRES_DB-openwebui}_vectordb TO ${POSTGRES_USER-openwebui};
-      \c ${POSTGRES_DB-openwebui}_vectordb
+      \c ${POSTGRES_DB-openwebui}
       CREATE EXTENSION IF NOT EXISTS vector;

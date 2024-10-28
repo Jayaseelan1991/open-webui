@@ -1,320 +1,300 @@
-from typing import Optional, List, Dict, Any, Tuple
-import psycopg2
-from psycopg2.extras import RealDictCursor, Json, execute_batch
-from psycopg2.extensions import register_adapter, AsIs
-from psycopg2.pool import ThreadedConnectionPool
+from typing import Optional, List, Dict, Any
+from sqlalchemy import (
+    Column,
+    Text,
+    text,
+)
+from sqlalchemy import text, bindparam
+from sqlalchemy.orm import declarative_base, Session
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Integer
+from pgvector.sqlalchemy import Vector
+from sqlalchemy.ext.mutable import MutableDict
+from sqlalchemy.ext.declarative import declarative_base
 
+from open_webui.apps.webui.internal.db import Session
 from open_webui.apps.retrieval.vector.main import VectorItem, SearchResult, GetResult
-from open_webui.config import PGVECTOR_URI, PGVECTOR_CONNECTION_POOL_SIZE
 
-import json
+VECTOR_LENGTH = 1536
+Base = declarative_base()
 
-NO_LIMIT: int = 999999999
 
-# Register an adapter to handle the vector type
-class Vector:
-    def __init__(self, data: List[float]):
-        self.data: List[float] = data
+class DocumentChunk(Base):
+    __tablename__ = "document_chunk"
 
-def vector_adapter(vector: 'Vector') -> AsIs:
-    vector_str = '[' + ','.join(map(str, vector.data)) + ']'
-    return AsIs("'" + vector_str + "'::vector")
+    id = Column(Text, primary_key=True)
+    vector = Column(Vector(dim=VECTOR_LENGTH), nullable=True)
+    collection_name = Column(Text, nullable=False)
+    text = Column(Text, nullable=True)
+    vmetadata = Column(MutableDict.as_mutable(JSONB), nullable=True)
 
-register_adapter(Vector, vector_adapter)
 
 class PgvectorClient:
     def __init__(self) -> None:
-        self.collection_prefix: str = "open_webui"
-        self.PGVECTOR_URI: str = PGVECTOR_URI
-        self.PGVECTOR_CONNECTION_POOL_SIZE: int = PGVECTOR_CONNECTION_POOL_SIZE
-        if self.PGVECTOR_URI:
-            self.pool = ThreadedConnectionPool(
-                minconn=1,
-                maxconn=self.PGVECTOR_CONNECTION_POOL_SIZE,
-                dsn=self.PGVECTOR_URI
-            )
-            # Initialize the extension in a separate connection
-            conn = self.pool.getconn()
-            try:
-                self.enable_pgvector_extension(conn)
-            finally:
-                self.pool.putconn(conn)
-        else:
-            self.pool = None
-
-    def enable_pgvector_extension(self, conn) -> None:
-        with conn.cursor() as cur:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-        conn.commit()
-
-    def _get_connection(self):
-        if not self.pool:
-            raise Exception("Connection pool is not initialized.")
-        return self.pool.getconn()
-
-    def _put_connection(self, conn):
-        if self.pool:
-            self.pool.putconn(conn)
-
-    def _result_to_get_result(self, results: List[Dict[str, Any]]) -> GetResult:
-        ids: List[List[str]] = []
-        documents: List[List[str]] = []
-        metadatas: List[List[Any]] = []
-
-        _ids: List[str] = []
-        _documents: List[str] = []
-        _metadatas: List[Any] = []
-
-        for row in results:
-            _ids.append(row['id'])
-            _documents.append(row['text'])
-            _metadatas.append(row['metadata'])
-
-        ids.append(_ids)
-        documents.append(_documents)
-        metadatas.append(_metadatas)
-
-        return GetResult(
-            ids=ids,
-            documents=documents,
-            metadatas=metadatas,
-        )
-
-    def _result_to_search_result(self, results: List[Dict[str, Any]]) -> SearchResult:
-        ids: List[List[str]] = []
-        distances: List[List[float]] = []
-        documents: List[List[str]] = []
-        metadatas: List[List[Any]] = []
-
-        _ids: List[str] = []
-        _distances: List[float] = []
-        _documents: List[str] = []
-        _metadatas: List[Any] = []
-
-        for row in results:
-            _ids.append(row['id'])
-            _distances.append(row['distance'])
-            _documents.append(row['text'])
-            _metadatas.append(row['metadata'])
-
-        ids.append(_ids)
-        distances.append(_distances)
-        documents.append(_documents)
-        metadatas.append(_metadatas)
-
-        return SearchResult(
-            ids=ids,
-            distances=distances,
-            documents=documents,
-            metadatas=metadatas,
-        )
-
-    def _create_collection(self, collection_name: str, dimension: int) -> None:
-        conn = self._get_connection()
+        self.session = Session
         try:
-            collection_name_with_prefix: str = f"{self.collection_prefix}_{collection_name}"
-            collection_name_with_prefix = collection_name_with_prefix.replace("-", "_")
-            with conn.cursor() as cur:
-                create_table_sql: str = f"""
-                CREATE TABLE IF NOT EXISTS {collection_name_with_prefix} (
-                    id TEXT PRIMARY KEY,
-                    vector VECTOR({dimension}),
-                    text TEXT,
-                    metadata JSONB
-                );
-                """
-                cur.execute(create_table_sql)
-                create_index_sql: str = f"""
-                CREATE INDEX IF NOT EXISTS {collection_name_with_prefix}_vector_idx
-                ON {collection_name_with_prefix} USING ivfflat (vector) WITH (lists = 100);
-                """
-                cur.execute(create_index_sql)
-            conn.commit()
-            print(f"Collection {collection_name_with_prefix} successfully created!")
-        finally:
-            self._put_connection(conn)
+            # Ensure the pgvector extension is available
+            self.session.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
 
-    def _create_collection_if_not_exists(self, collection_name: str, dimension: int) -> None:
-        if not self.has_collection(collection_name):
-            self._create_collection(collection_name, dimension)
+            # Create the tables if they do not exist
+            # Base.metadata.create_all requires a bind (engine or connection)
+            # Get the connection from the session
+            connection = self.session.connection()
+            Base.metadata.create_all(bind=connection)
 
-    def has_collection(self, collection_name: str) -> bool:
-        conn = self._get_connection()
-        try:
-            collection_name_with_prefix: str = f"{self.collection_prefix}_{collection_name}"
-            collection_name_with_prefix = collection_name_with_prefix.replace("-", "_")
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables
-                        WHERE table_name = %s
-                    );
-                    """,
-                    (collection_name_with_prefix,),
+            # Create an index on the vector column if it doesn't exist
+            self.session.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_document_chunk_vector "
+                    "ON document_chunk USING ivfflat (vector) WITH (lists = 100);"
                 )
-                exists: bool = cur.fetchone()[0]
-            return exists
-        finally:
-            self._put_connection(conn)
+            )
+            self.session.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_document_chunk_collection_name "
+                    "ON document_chunk (collection_name);"
+                )
+            )
+            self.session.commit()
+            print("Initialization complete.")
+        except Exception as e:
+            self.session.rollback()
+            print(f"Error during initialization: {e}")
+            raise
 
-    def delete_collection(self, collection_name: str) -> None:
-        conn = self._get_connection()
+    def adjust_vector_length(self, vector: List[float]) -> List[float]:
+        # Adjust vector to have length VECTOR_LENGTH
+        current_length = len(vector)
+        if current_length < VECTOR_LENGTH:
+            # Pad the vector with zeros
+            vector += [0.0] * (VECTOR_LENGTH - current_length)
+        elif current_length > VECTOR_LENGTH:
+            raise Exception(
+                f"Vector length {current_length} not supported. Max length must be <= {VECTOR_LENGTH}"
+            )
+        return vector
+
+    def insert(self, collection_name: str, items: List[VectorItem]) -> None:
         try:
-            collection_name_with_prefix: str = f"{self.collection_prefix}_{collection_name}"
-            collection_name_with_prefix = collection_name_with_prefix.replace("-", "_")
-            with conn.cursor() as cur:
-                delete_table_sql: str = f"DROP TABLE IF EXISTS {collection_name_with_prefix} CASCADE;"
-                cur.execute(delete_table_sql)
-            conn.commit()
-        finally:
-            self._put_connection(conn)
+            new_items = []
+            for item in items:
+                vector = self.adjust_vector_length(item["vector"])
+                new_chunk = DocumentChunk(
+                    id=item["id"],
+                    vector=vector,
+                    collection_name=collection_name,
+                    text=item["text"],
+                    vmetadata=item["metadata"],
+                )
+                new_items.append(new_chunk)
+            self.session.bulk_save_objects(new_items)
+            self.session.commit()
+            print(
+                f"Inserted {len(new_items)} items into collection '{collection_name}'."
+            )
+        except Exception as e:
+            self.session.rollback()
+            print(f"Error during insert: {e}")
+            raise
+
+    def upsert(self, collection_name: str, items: List[VectorItem]) -> None:
+        try:
+            for item in items:
+                vector = self.adjust_vector_length(item["vector"])
+                existing = (
+                    self.session.query(DocumentChunk)
+                    .filter(DocumentChunk.id == item["id"])
+                    .first()
+                )
+                if existing:
+                    existing.vector = vector
+                    existing.text = item["text"]
+                    existing.vmetadata = item["metadata"]
+                    existing.collection_name = (
+                        collection_name  # Update collection_name if necessary
+                    )
+                else:
+                    new_chunk = DocumentChunk(
+                        id=item["id"],
+                        vector=vector,
+                        collection_name=collection_name,
+                        text=item["text"],
+                        vmetadata=item["metadata"],
+                    )
+                    self.session.add(new_chunk)
+            self.session.commit()
+            print(f"Upserted {len(items)} items into collection '{collection_name}'.")
+        except Exception as e:
+            self.session.rollback()
+            print(f"Error during upsert: {e}")
+            raise
 
     def search(
-        self, collection_name: str, vectors: List[List[float]], limit: Optional[int]
+        self,
+        collection_name: str,
+        vectors: List[List[float]],
+        limit: Optional[int] = None,
     ) -> Optional[SearchResult]:
-        if limit is None:
-            limit = NO_LIMIT
-        conn = self._get_connection()
         try:
-            collection_name_with_prefix: str = f"{self.collection_prefix}_{collection_name}"
-            collection_name_with_prefix = collection_name_with_prefix.replace("-", "_")
-            query_vector: List[float] = vectors[0]
-            query_vector_obj: Vector = Vector(query_vector)
-
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                search_sql: str = f"""
-                SELECT id, text, metadata, (vector <=> %s) AS distance
-                FROM {collection_name_with_prefix}
-                ORDER BY vector <=> %s
-                LIMIT %s;
-                """
-                cur.execute(search_sql, (query_vector_obj, query_vector_obj, limit))
-                results: List[Dict[str, Any]] = cur.fetchall()
-
-            if not results:
+            if not vectors:
                 return None
 
-            return self._result_to_search_result(results)
-        finally:
-            self._put_connection(conn)
+            # Adjust query vectors to VECTOR_LENGTH
+            vectors = [self.adjust_vector_length(vector) for vector in vectors]
+            num_queries = len(vectors)
+
+            # Build the VALUES clause for the query_vectors CTE
+            # And collect the parameters to bind
+            values_clause = []
+            params = {"collection_name": collection_name}
+            if limit is not None:
+                params["limit"] = limit
+
+            for idx, vector in enumerate(vectors):
+                # Use :q_vector_n as parameter placeholders
+                param_name = f"q_vector_{idx}"
+                params[param_name] = vector
+                values_clause.append(f"({idx}, VECTOR(:{param_name}))")
+
+            values_clause_str = ",\n".join(values_clause)
+
+            # Build the SQL statement
+            sql_query = text(
+                f"""
+                WITH query_vectors (qid, q_vector) AS (
+                    VALUES
+                    {values_clause_str}
+                )
+                SELECT
+                    q.qid,
+                    result.id,
+                    result.text,
+                    result.vmetadata,
+                    result.distance
+                FROM
+                    query_vectors q
+                JOIN LATERAL (
+                    SELECT
+                        d.id,
+                        d.text,
+                        d.vmetadata,
+                        (d.vector <=> q.q_vector) AS distance
+                    FROM
+                        document_chunk d
+                    WHERE
+                        d.collection_name = :collection_name
+                    ORDER BY
+                        d.vector <=> q.q_vector
+                    {'' if limit is None else 'LIMIT :limit'}
+                ) result ON TRUE
+                ORDER BY
+                    q.qid, result.distance
+            """
+            )
+            print("--------------------------")
+            print(values_clause)
+            print("--------------------------")
+            print(sql_query)
+            print("--------------------------")
+
+            # Specify parameter types
+            bind_params = [
+                bindparam(f"q_vector_{idx}", type_=Vector(VECTOR_LENGTH))
+                for idx in range(num_queries)
+            ]
+            if limit is not None:
+                bind_params.append(bindparam("limit", type_=Integer))
+
+            sql_query = sql_query.bindparams(*bind_params)
+
+            # Execute the query
+            result_proxy = self.session.execute(sql_query, params)
+            results = result_proxy.mappings().all()
+
+            # Organize results per query vector
+            ids = [[] for _ in range(num_queries)]
+            distances = [[] for _ in range(num_queries)]
+            documents = [[] for _ in range(num_queries)]
+            metadatas = [[] for _ in range(num_queries)]
+
+            if not results:
+                # Since we have multiple query vectors, we should return empty lists for each vector
+                return SearchResult(
+                    ids=ids,
+                    distances=distances,
+                    documents=documents,
+                    metadatas=metadatas,
+                )
+
+            for row in results:
+                qid = int(row["qid"])
+                ids[qid].append(row["id"])
+                distances[qid].append(row["distance"])
+                documents[qid].append(row["text"])
+                metadatas[qid].append(row["vmetadata"])
+
+            return SearchResult(
+                ids=ids, distances=distances, documents=documents, metadatas=metadatas
+            )
+        except Exception as e:
+            print(f"Error during search: {e}")
+            return None
 
     def query(
         self, collection_name: str, filter: Dict[str, Any], limit: Optional[int] = None
     ) -> Optional[GetResult]:
-        if not self.has_collection(collection_name):
-            return None
-        if limit is None:
-            limit = NO_LIMIT
-
-        conn = self._get_connection()
         try:
-            collection_name_with_prefix: str = f"{self.collection_prefix}_{collection_name}"
-            collection_name_with_prefix = collection_name_with_prefix.replace("-", "_")
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                where_clauses: List[str] = []
-                values: List[Any] = []
-                for key, value in filter.items():
-                    where_clauses.append("metadata ->> %s = %s")
-                    values.extend([key, json.dumps(value)])
-                where_sql: str = ' AND '.join(where_clauses)
+            query = self.session.query(DocumentChunk).filter(
+                DocumentChunk.collection_name == collection_name
+            )
 
-                query_sql: str = f"""
-                SELECT id, text, metadata
-                FROM {collection_name_with_prefix}
-                WHERE {where_sql}
-                LIMIT %s;
-                """
-                values.append(limit)
-                cur.execute(query_sql, values)
-                results: List[Dict[str, Any]] = cur.fetchall()
+            for key, value in filter.items():
+                query = query.filter(DocumentChunk.vmetadata[key].astext == str(value))
+
+            if limit is not None:
+                query = query.limit(limit)
+
+            results = query.all()
 
             if not results:
                 return None
 
-            return self._result_to_get_result(results)
+            ids = [[result.id for result in results]]
+            documents = [[result.text for result in results]]
+            metadatas = [[result.vmetadata for result in results]]
+
+            return GetResult(
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas,
+            )
         except Exception as e:
-            print(f"Error when querying the collection: {e}")
+            print(f"Error during query: {e}")
             return None
-        finally:
-            self._put_connection(conn)
 
-    def get(self, collection_name: str) -> Optional[GetResult]:
-        conn = self._get_connection()
+    def get(
+        self, collection_name: str, limit: Optional[int] = None
+    ) -> Optional[GetResult]:
         try:
-            collection_name_with_prefix: str = f"{self.collection_prefix}_{collection_name}"
-            collection_name_with_prefix = collection_name_with_prefix.replace("-", "_")
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                get_sql: str = f"""
-                SELECT id, text, metadata
-                FROM {collection_name_with_prefix}
-                LIMIT %s;
-                """
-                cur.execute(get_sql, (NO_LIMIT,))
-                results: List[Dict[str, Any]] = cur.fetchall()
+            query = self.session.query(DocumentChunk).filter(
+                DocumentChunk.collection_name == collection_name
+            )
+            if limit is not None:
+                query = query.limit(limit)
+
+            results = query.all()
 
             if not results:
                 return None
 
-            return self._result_to_get_result(results)
-        finally:
-            self._put_connection(conn)
+            ids = [[result.id for result in results]]
+            documents = [[result.text for result in results]]
+            metadatas = [[result.vmetadata for result in results]]
 
-    def insert(self, collection_name: str, items: List[VectorItem]) -> None:
-        self._create_collection_if_not_exists(collection_name, len(items[0]["vector"]))
-        conn = self._get_connection()
-        try:
-            collection_name_with_prefix: str = f"{self.collection_prefix}_{collection_name}"
-            collection_name_with_prefix = collection_name_with_prefix.replace("-", "_")
-
-            with conn.cursor() as cur:
-                insert_sql: str = f"""
-                INSERT INTO {collection_name_with_prefix} (id, vector, text, metadata)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (id) DO NOTHING;
-                """
-                data: List[Tuple[str, Vector, str, Json]] = [
-                    (
-                        item["id"],
-                        Vector(item["vector"]),
-                        item["text"],
-                        Json(item["metadata"]),
-                    )
-                    for item in items
-                ]
-                execute_batch(cur, insert_sql, data)
-            conn.commit()
-        finally:
-            self._put_connection(conn)
-
-    def upsert(self, collection_name: str, items: List[VectorItem]) -> None:
-        self._create_collection_if_not_exists(collection_name, len(items[0]["vector"]))
-        conn = self._get_connection()
-        try:
-            collection_name_with_prefix: str = f"{self.collection_prefix}_{collection_name}"
-            collection_name_with_prefix = collection_name_with_prefix.replace("-", "_")
-            with conn.cursor() as cur:
-                upsert_sql: str = f"""
-                INSERT INTO {collection_name_with_prefix} (id, vector, text, metadata)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (id) DO UPDATE SET
-                vector = EXCLUDED.vector,
-                text = EXCLUDED.text,
-                metadata = EXCLUDED.metadata;
-                """
-                data: List[Tuple[str, Vector, str, Json]] = [
-                    (
-                        item["id"],
-                        Vector(item["vector"]),
-                        item["text"],
-                        Json(item["metadata"]),
-                    )
-                    for item in items
-                ]
-                execute_batch(cur, upsert_sql, data)
-            conn.commit()
-        finally:
-            self._put_connection(conn)
+            return GetResult(ids=ids, documents=documents, metadatas=metadatas)
+        except Exception as e:
+            print(f"Error during get: {e}")
+            return None
 
     def delete(
         self,
@@ -322,55 +302,53 @@ class PgvectorClient:
         ids: Optional[List[str]] = None,
         filter: Optional[Dict[str, Any]] = None,
     ) -> None:
-        conn = self._get_connection()
         try:
-            collection_name_with_prefix: str = f"{self.collection_prefix}_{collection_name}"
-            collection_name_with_prefix = collection_name_with_prefix.replace("-", "_")
-            with conn.cursor() as cur:
-                if ids:
-                    delete_sql: str = f"""
-                    DELETE FROM {collection_name_with_prefix}
-                    WHERE id IN %s;
-                    """
-                    cur.execute(delete_sql, (tuple(ids),))
-                elif filter:
-                    where_clauses: List[str] = []
-                    values: List[Any] = []
-                    for key, value in filter.items():
-                        where_clauses.append("metadata ->> %s = %s")
-                        values.extend([key, json.dumps(value)])
-                    where_sql: str = ' AND '.join(where_clauses)
-                    delete_sql: str = f"""
-                    DELETE FROM {collection_name_with_prefix}
-                    WHERE {where_sql};
-                    """
-                    cur.execute(delete_sql, values)
-                else:
-                    delete_sql: str = f"DELETE FROM {collection_name_with_prefix};"
-                    cur.execute(delete_sql)
-            conn.commit()
-        finally:
-            self._put_connection(conn)
+            query = self.session.query(DocumentChunk).filter(
+                DocumentChunk.collection_name == collection_name
+            )
+            if ids:
+                query = query.filter(DocumentChunk.id.in_(ids))
+            if filter:
+                for key, value in filter.items():
+                    query = query.filter(
+                        DocumentChunk.vmetadata[key].astext == str(value)
+                    )
+            deleted = query.delete(synchronize_session=False)
+            self.session.commit()
+            print(f"Deleted {deleted} items from collection '{collection_name}'.")
+        except Exception as e:
+            self.session.rollback()
+            print(f"Error during delete: {e}")
+            raise
 
     def reset(self) -> None:
-        conn = self._get_connection()
         try:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    """
-                    SELECT table_name FROM information_schema.tables
-                    WHERE table_schema = 'public' AND table_name LIKE %s;
-                    """,
-                    (f"{self.collection_prefix}_%",),
-                )
-                tables: List[Dict[str, Any]] = cur.fetchall()
-                for table in tables:
-                    table_name: str = table['table_name']
-                    cur.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE;")
-            conn.commit()
-        finally:
-            self._put_connection(conn)
+            deleted = self.session.query(DocumentChunk).delete()
+            self.session.commit()
+            print(
+                f"Reset complete. Deleted {deleted} items from 'document_chunk' table."
+            )
+        except Exception as e:
+            self.session.rollback()
+            print(f"Error during reset: {e}")
+            raise
 
     def close(self) -> None:
-        if self.pool:
-            self.pool.closeall()
+        pass
+
+    def has_collection(self, collection_name: str) -> bool:
+        try:
+            exists = (
+                self.session.query(DocumentChunk)
+                .filter(DocumentChunk.collection_name == collection_name)
+                .first()
+                is not None
+            )
+            return exists
+        except Exception as e:
+            print(f"Error checking collection existence: {e}")
+            return False
+
+    def delete_collection(self, collection_name: str) -> None:
+        self.delete(collection_name)
+        print(f"Collection '{collection_name}' deleted.")
