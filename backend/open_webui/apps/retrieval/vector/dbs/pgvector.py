@@ -1,14 +1,19 @@
 from typing import Optional, List, Dict, Any
 from sqlalchemy import (
+    cast,
+    column,
     Column,
-    Text,
+    Integer,
+    select,
     text,
+    Text,
+    values,
 )
-from sqlalchemy import text, bindparam
+from sqlalchemy.sql import true
+
 from sqlalchemy.orm import declarative_base, Session
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy import Integer
-from pgvector.sqlalchemy import Vector
+from sqlalchemy.dialects.postgresql import JSONB, array
+from pgvector.sqlalchemy import Vector, VECTOR
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -46,7 +51,7 @@ class PgvectorClient:
             self.session.execute(
                 text(
                     "CREATE INDEX IF NOT EXISTS idx_document_chunk_vector "
-                    "ON document_chunk USING ivfflat (vector) WITH (lists = 100);"
+                    "ON document_chunk USING ivfflat (vector vector_cosine_ops) WITH (lists = 100);"
                 )
             )
             self.session.execute(
@@ -143,73 +148,56 @@ class PgvectorClient:
             vectors = [self.adjust_vector_length(vector) for vector in vectors]
             num_queries = len(vectors)
 
-            # Build the VALUES clause for the query_vectors CTE
-            # And collect the parameters to bind
-            values_clause = []
-            params = {"collection_name": collection_name}
-            if limit is not None:
-                params["limit"] = limit
+            def vector_expr(vector):
+                return cast(array(vector), Vector(VECTOR_LENGTH))
 
-            for idx, vector in enumerate(vectors):
-                # Use :q_vector_n as parameter placeholders
-                param_name = f"q_vector_{idx}"
-                params[param_name] = vector
-                values_clause.append(f"({idx}, VECTOR(:{param_name}))")
-
-            values_clause_str = ",\n".join(values_clause)
-
-            # Build the SQL statement
-            sql_query = text(
-                f"""
-                WITH query_vectors (qid, q_vector) AS (
-                    VALUES
-                    {values_clause_str}
+            # Create the values table for query vectors
+            qid_col = column("qid", Integer)
+            q_vector_col = column("q_vector", Vector(VECTOR_LENGTH))
+            query_vectors = (
+                values(qid_col, q_vector_col)
+                .data(
+                    [(idx, vector_expr(vector)) for idx, vector in enumerate(vectors)]
                 )
-                SELECT
-                    q.qid,
-                    result.id,
-                    result.text,
-                    result.vmetadata,
-                    result.distance
-                FROM
-                    query_vectors q
-                JOIN LATERAL (
-                    SELECT
-                        d.id,
-                        d.text,
-                        d.vmetadata,
-                        (d.vector <=> q.q_vector) AS distance
-                    FROM
-                        document_chunk d
-                    WHERE
-                        d.collection_name = :collection_name
-                    ORDER BY
-                        d.vector <=> q.q_vector
-                    {'' if limit is None else 'LIMIT :limit'}
-                ) result ON TRUE
-                ORDER BY
-                    q.qid, result.distance
-            """
+                .alias("query_vectors")
             )
-            print("--------------------------")
-            print(values_clause)
-            print("--------------------------")
-            print(sql_query)
-            print("--------------------------")
 
-            # Specify parameter types
-            bind_params = [
-                bindparam(f"q_vector_{idx}", type_=Vector(VECTOR_LENGTH))
-                for idx in range(num_queries)
-            ]
+            # Build the lateral subquery for each query vector
+            subq = (
+                select(
+                    DocumentChunk.id,
+                    DocumentChunk.text,
+                    DocumentChunk.vmetadata,
+                    (
+                        DocumentChunk.vector.cosine_distance(query_vectors.c.q_vector)
+                    ).label("distance"),
+                )
+                .where(DocumentChunk.collection_name == collection_name)
+                .order_by(
+                    (DocumentChunk.vector.cosine_distance(query_vectors.c.q_vector))
+                )
+            )
             if limit is not None:
-                bind_params.append(bindparam("limit", type_=Integer))
+                subq = subq.limit(limit)
+            subq = subq.lateral("result")
 
-            sql_query = sql_query.bindparams(*bind_params)
+            # Build the main query by joining query_vectors and the lateral subquery
+            stmt = (
+                select(
+                    query_vectors.c.qid,
+                    subq.c.id,
+                    subq.c.text,
+                    subq.c.vmetadata,
+                    subq.c.distance,
+                )
+                .select_from(query_vectors)
+                .join(subq, true())
+                .order_by(query_vectors.c.qid, subq.c.distance)
+            )
 
             # Execute the query
-            result_proxy = self.session.execute(sql_query, params)
-            results = result_proxy.mappings().all()
+            result_proxy = self.session.execute(stmt)
+            results = result_proxy.all()
 
             # Organize results per query vector
             ids = [[] for _ in range(num_queries)]
@@ -218,7 +206,6 @@ class PgvectorClient:
             metadatas = [[] for _ in range(num_queries)]
 
             if not results:
-                # Since we have multiple query vectors, we should return empty lists for each vector
                 return SearchResult(
                     ids=ids,
                     distances=distances,
@@ -227,11 +214,11 @@ class PgvectorClient:
                 )
 
             for row in results:
-                qid = int(row["qid"])
-                ids[qid].append(row["id"])
-                distances[qid].append(row["distance"])
-                documents[qid].append(row["text"])
-                metadatas[qid].append(row["vmetadata"])
+                qid = int(row.qid)
+                ids[qid].append(row.id)
+                distances[qid].append(row.distance)
+                documents[qid].append(row.text)
+                metadatas[qid].append(row.vmetadata)
 
             return SearchResult(
                 ids=ids, distances=distances, documents=documents, metadatas=metadatas

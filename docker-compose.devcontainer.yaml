@@ -9,6 +9,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER-openwebui}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD-openwebui}
       POSTGRES_PORT: ${POSTGRES_PORT-5432}
+    command: "-c log_statement=all"
     ports:
       - '127.0.0.1:${POSTGRES_PORT-5432}:${POSTGRES_PORT-5432}'
     configs:
