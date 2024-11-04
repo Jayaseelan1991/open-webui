@@ -52,6 +52,7 @@
 		);
 		console.log(sessionUser);
 		if (sessionUser.auth_url) {
+			localStorage.token = sessionUser.token;
 			localStorage.auth_url = sessionUser.auth_url;
 		}
 		goto('/mfa');

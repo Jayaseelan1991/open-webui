@@ -85,6 +85,9 @@ class SignupForm(BaseModel):
     password: str
     profile_image_url: Optional[str] = "/user.png"
 
+class VerifyForm(BaseModel):
+    token: str
+    auth_code: str
 
 class AddUserForm(SignupForm):
     role: Optional[str] = "pending"

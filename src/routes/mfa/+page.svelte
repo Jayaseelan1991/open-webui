@@ -1,6 +1,6 @@
 <script>
 	import { goto } from '$app/navigation';
-	import { getSessionUser, userSignIn, userSignUp } from '$lib/apis/auths';
+	import { getSessionUser, userVerify } from '$lib/apis/auths';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 	import { WEBUI_NAME, config, user, socket } from '$lib/stores';
@@ -16,10 +16,8 @@
 	let loaded = false;
 	let mode = 'signin';
 
-	let name = '';
-	let email = '';
-	let password = '';
-	let auth_url = '';
+	let token = '';
+	let auth_code = '';
 
 	// const setSessionUser = async (sessionUser) => {
 	// 	if (sessionUser) {
@@ -36,17 +34,18 @@
 	// 	}
 	// };
 
-	const signInHandler = async () => {
-		const sessionUser = await userSignIn(email, password).catch((error) => {
-			toast.error(error);
-			return null;
-		});
+	// const signInHandler = async () => {
+	// 	const sessionUser = await userSignIn(email, password).catch((error) => {
+	// 		toast.error(error);
+	// 		return null;
+	// 	});
 
-		await setSessionUser(sessionUser);
-	};
+	// 	await setSessionUser(sessionUser);
+	// };
 
-	const signUpHandler = async () => {
-		const sessionUser = await userSignUp(name, email, password, generateInitialsImage(name)).catch(
+	const userVerifyHandler = async () => {
+
+		const sessionUser = await userVerify(token, auth_code).catch(
 			(error) => {
 				toast.error(error);
 				return null;
@@ -57,11 +56,7 @@
 	};
 
 	const submitHandler = async () => {
-		if (mode === 'signin') {
-			await signInHandler();
-		} else {
-			await signUpHandler();
-		}
+		await userVerifyHandler();
 	};
 
 	const checkOauthCallback = async () => {
@@ -98,6 +93,7 @@
 		// 	await signInHandler();
 		// }
 		auth_url = localStorage.getItem("auth_url")
+		token = localStorage.getItem("token")
 
 	});
 </script>
@@ -167,14 +163,35 @@
 							</div>
 							<div class=" mt-1 text-xs font-medium text-gray-500">
 								{$i18n.t(
-									'Use microsoft authenticator app from your phone to scan.'
+									'Use Google authenticator app from your phone to scan.'
 								)}
 							</div>						
 						</div>
 
 						{#if $config?.features.enable_login_form}
-							<div class="flex flex-col" style="align-items: center;">
+							<div class="flex flex-col" style="align-items: center; margin-bottom:15px;">
 								<QRCode data={auth_url} />
+							</div>
+
+							<div>
+								<div class=" text-sm font-medium text-left mb-1">{$i18n.t('Enter the code shown in the app')}</div>
+
+								<input
+									bind:value={auth_code}
+									type="password"
+									class=" px-5 py-3 rounded-2xl w-full text-sm outline-none border dark:border-none dark:bg-gray-900"
+									placeholder={$i18n.t('Enter the code')}
+									required
+								/>
+							</div>
+
+							<div class="mt-5">
+								<button
+									class=" bg-gray-900 hover:bg-gray-800 w-full rounded-2xl text-white font-medium text-sm py-3 transition"
+									type="submit"
+								>
+									{$i18n.t('Verify')}
+								</button>
 							</div>
 						{/if}
 					</form>
