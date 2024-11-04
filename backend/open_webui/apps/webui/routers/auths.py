@@ -2,6 +2,7 @@ import re
 import uuid
 import time
 import datetime
+import pyotp
 
 from open_webui.apps.webui.models.auths import (
     AddUserForm,
@@ -261,12 +262,14 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
             else request.app.state.config.DEFAULT_USER_ROLE
         )
         hashed = get_password_hash(form_data.password)
+        code = pyotp.random_base32()
         user = Auths.insert_new_auth(
             form_data.email.lower(),
             hashed,
             form_data.name,
             form_data.profile_image_url,
             role,
+            code
         )
 
         if user:
@@ -307,6 +310,8 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
                     },
                 )
 
+            auth_url = pyotp.totp.TOTP(code).provisioning_uri(name=user.name, issuer_name="Open WebUI")
+
             return {
                 "token": token,
                 "token_type": "Bearer",
@@ -316,6 +321,7 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
                 "name": user.name,
                 "role": user.role,
                 "profile_image_url": user.profile_image_url,
+                "auth_url": auth_url
             }
         else:
             raise HTTPException(500, detail=ERROR_MESSAGES.CREATE_USER_ERROR)

@@ -1,6 +1,7 @@
 import logging
 import uuid
-from datetime import UTC, datetime, timedelta
+# from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Union
 
 import jwt
@@ -16,6 +17,7 @@ logging.getLogger("passlib").setLevel(logging.ERROR)
 
 SESSION_SECRET = WEBUI_SECRET_KEY
 ALGORITHM = "HS256"
+UTC = timezone.utc
 
 ##############
 # Auth Utils
