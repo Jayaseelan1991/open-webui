@@ -16,6 +16,7 @@ from open_webui.apps.webui.models.auths import (
     UpdatePasswordForm,
     UpdateProfileForm,
     UserResponse,
+    VerifyUserResponse,
 )
 from open_webui.apps.webui.models.users import Users
 from open_webui.config import WEBUI_AUTH
@@ -186,6 +187,7 @@ async def signin(request: Request, response: Response, form_data: SigninForm):
             "name": user.name,
             "role": user.role,
             "profile_image_url": user.profile_image_url,
+            "auth_url": ""
         }
     else:
         raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
@@ -299,102 +301,32 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
 ############################
 
 
-@router.post("/verify", response_model=SessionUserResponse)
-async def verify(request: Request, response: Response, form_data: VerifyForm):
-    if WEBUI_AUTH:
-        if (
-            not request.app.state.config.ENABLE_SIGNUP
-            or not request.app.state.config.ENABLE_LOGIN_FORM
-        ):
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.ACCESS_PROHIBITED
-            )
-    else:
-        if Users.get_num_users() != 0:
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.ACCESS_PROHIBITED
-            )
+@router.post("/verify", response_model=VerifyUserResponse)
+async def verify(
+    request: Request, response: Response, form_data: VerifyForm, user=Depends(get_current_user)
+):
+    if user:
+        expires_delta = parse_duration(request.app.state.config.JWT_EXPIRES_IN)
+        expires_at = None
+        if expires_delta:
+            expires_at = int(time.time()) + int(expires_delta.total_seconds())
 
-    if not validate_email_format(form_data.email.lower()):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_EMAIL_FORMAT
-        )
-
-    if Users.get_user_by_email(form_data.email.lower()):
-        raise HTTPException(400, detail=ERROR_MESSAGES.EMAIL_TAKEN)
-
-    try:
-        role = (
-            "admin"
-            if Users.get_num_users() == 0
-            else request.app.state.config.DEFAULT_USER_ROLE
-        )
-        hashed = get_password_hash(form_data.password)
-        code = pyotp.random_base32()
-        user = Auths.insert_new_auth(
-            form_data.email.lower(),
-            hashed,
-            form_data.name,
-            form_data.profile_image_url,
-            role,
-            code
-        )
-
-        if user:
-            expires_delta = parse_duration(request.app.state.config.JWT_EXPIRES_IN)
-            expires_at = None
-            if expires_delta:
-                expires_at = int(time.time()) + int(expires_delta.total_seconds())
-
-            token = create_token(
-                data={"id": user.id},
-                expires_delta=expires_delta,
-            )
-
-            datetime_expires_at = (
-                datetime.datetime.fromtimestamp(expires_at, datetime.timezone.utc)
-                if expires_at
-                else None
-            )
-
-            # Set the cookie token
-            response.set_cookie(
-                key="token",
-                value=token,
-                expires=datetime_expires_at,
-                httponly=True,  # Ensures the cookie is not accessible via JavaScript
-                samesite=WEBUI_SESSION_COOKIE_SAME_SITE,
-                secure=WEBUI_SESSION_COOKIE_SECURE,
-            )
-
-            if request.app.state.config.WEBHOOK_URL:
-                post_webhook(
-                    request.app.state.config.WEBHOOK_URL,
-                    WEBHOOK_MESSAGES.USER_SIGNUP(user.name),
-                    {
-                        "action": "signup",
-                        "message": WEBHOOK_MESSAGES.USER_SIGNUP(user.name),
-                        "user": user.model_dump_json(exclude_none=True),
-                    },
-                )
-
-            auth_url = pyotp.totp.TOTP(code).provisioning_uri(name=user.name, issuer_name="Open WebUI")
-
+        totp = pyotp.TOTP(user.code)
+        ret = totp.verify(form_data.auth_code)
+        if ret:
             return {
-                "token": token,
                 "token_type": "Bearer",
                 "expires_at": expires_at,
                 "id": user.id,
                 "email": user.email,
                 "name": user.name,
                 "role": user.role,
-                "profile_image_url": user.profile_image_url,
-                "auth_url": auth_url
+                "profile_image_url": user.profile_image_url
             }
         else:
-            raise HTTPException(500, detail=ERROR_MESSAGES.CREATE_USER_ERROR)
-    except Exception as err:
-        raise HTTPException(500, detail=ERROR_MESSAGES.DEFAULT(err))
+            raise HTTPException(500, detail=ERROR_MESSAGES.INVALID_AUTH_CODE)
+    else:
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
 
 
 @router.get("/signout")

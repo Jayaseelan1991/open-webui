@@ -56,6 +56,13 @@ class UserResponse(BaseModel):
     profile_image_url: str
     auth_url: str
 
+class VerifyUserResponse(BaseModel):
+    id: str
+    email: str
+    name: str
+    role: str
+    profile_image_url: str
+
 class SigninResponse(Token, UserResponse):
     pass
 
@@ -86,7 +93,6 @@ class SignupForm(BaseModel):
     profile_image_url: Optional[str] = "/user.png"
 
 class VerifyForm(BaseModel):
-    token: str
     auth_code: str
 
 class AddUserForm(SignupForm):

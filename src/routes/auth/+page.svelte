@@ -40,7 +40,12 @@
 			return null;
 		});
 
-		await setSessionUser(sessionUser);
+		localStorage.token = sessionUser.token;
+		localStorage.auth_url = sessionUser.auth_url;
+
+
+		//await setSessionUser(sessionUser);
+		goto('/mfa');
 	};
 
 	const signUpHandler = async () => {

@@ -78,7 +78,7 @@ def get_current_user(
     auth_token: HTTPAuthorizationCredentials = Depends(bearer_security),
 ):
     token = None
-
+    print("get_current_user")
     if auth_token is not None:
         token = auth_token.credentials
 
@@ -94,6 +94,7 @@ def get_current_user(
 
     # auth by jwt token
     data = decode_token(token)
+    
     if data is not None and "id" in data:
         user = Users.get_user_by_id(data["id"])
         if user is None:

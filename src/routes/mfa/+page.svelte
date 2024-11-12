@@ -18,21 +18,22 @@
 
 	let token = '';
 	let auth_code = '';
+	let auth_url = '';
 
-	// const setSessionUser = async (sessionUser) => {
-	// 	if (sessionUser) {
-	// 		console.log(sessionUser);
-	// 		toast.success($i18n.t(`You're now logged in.`));
-	// 		if (sessionUser.token) {
-	// 			localStorage.token = sessionUser.token;
-	// 		}
+	const setSessionUser = async (sessionUser) => {
+		if (sessionUser) {
+			console.log(sessionUser);
+			toast.success($i18n.t(`You're now logged in.`));
+			if (sessionUser.token) {
+				localStorage.token = sessionUser.token;
+			}
 
-	// 		$socket.emit('user-join', { auth: { token: sessionUser.token } });
-	// 		await user.set(sessionUser);
-	// 		await config.set(await getBackendConfig());
-	// 		goto('/');
-	// 	}
-	// };
+			$socket.emit('user-join', { auth: { token: sessionUser.token } });
+			await user.set(sessionUser);
+			await config.set(await getBackendConfig());
+			goto('/');
+		}
+	};
 
 	// const signInHandler = async () => {
 	// 	const sessionUser = await userSignIn(email, password).catch((error) => {
@@ -51,8 +52,8 @@
 				return null;
 			}
 		);
-
-		//await setSessionUser(sessionUser);
+		sessionUser.token = token;
+		await setSessionUser(sessionUser);
 	};
 
 	const submitHandler = async () => {
@@ -92,7 +93,10 @@
 		// if (($config?.features.auth_trusted_header ?? false) || $config?.features.auth === false) {
 		// 	await signInHandler();
 		// }
-		auth_url = localStorage.getItem("auth_url")
+		if(localStorage.getItem("auth_url") != ''){
+			auth_url = localStorage.getItem("auth_url")
+			mode = 'auth'
+		}
 		token = localStorage.getItem("token")
 
 	});
@@ -158,21 +162,27 @@
 					>
 
 						<div class="mb-1">
-							<div class=" text-2xl font-medium">
-								{$i18n.t('Enable two-factor authentication(2FA)')}
-							</div>
-							<div class=" mt-1 text-xs font-medium text-gray-500">
-								{$i18n.t(
-									'Use Google authenticator app from your phone to scan.'
-								)}
-							</div>						
+							{#if mode === 'auth'}
+								<div class=" text-2xl font-medium">
+									{$i18n.t('Enable two-factor authentication(2FA)')}
+								</div>
+								<div class=" mt-1 text-xs font-medium text-gray-500">
+									{$i18n.t('Use Google authenticator app from your phone to scan.')}
+								</div>		
+							{/if}		
+							{#if mode === 'signin'}
+								<div class=" text-2xl font-medium">
+									{$i18n.t('Two-factor authentication(2FA)')}
+								</div>	
+							{/if}				
 						</div>
 
 						{#if $config?.features.enable_login_form}
-							<div class="flex flex-col" style="align-items: center; margin-bottom:15px;">
-								<QRCode data={auth_url} />
-							</div>
-
+							{#if mode === 'auth'}
+								<div class="flex flex-col" style="align-items: center; margin-bottom:15px;">
+									<QRCode data={auth_url} />
+								</div>
+							{/if}	
 							<div>
 								<div class=" text-sm font-medium text-left mb-1">{$i18n.t('Enter the code shown in the app')}</div>
 

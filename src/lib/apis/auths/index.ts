@@ -186,11 +186,11 @@ export const userVerify = async (token: string, auth_code: string) => {
 	const res = await fetch(`${WEBUI_API_BASE_URL}/auths/verify`, {
 		method: 'POST',
 		headers: {
-			'Content-Type': 'application/json'
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${token}`
 		},
 		credentials: 'include',
 		body: JSON.stringify({
-			token: token,
 			auth_code: auth_code
 		})
 	})
