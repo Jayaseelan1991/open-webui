@@ -2,6 +2,7 @@ import re
 import uuid
 import time
 import datetime
+import pyotp
 
 from open_webui.apps.webui.models.auths import (
     AddUserForm,
@@ -11,9 +12,11 @@ from open_webui.apps.webui.models.auths import (
     SigninForm,
     SigninResponse,
     SignupForm,
+    VerifyForm,
     UpdatePasswordForm,
     UpdateProfileForm,
     UserResponse,
+    VerifyUserResponse,
 )
 from open_webui.apps.webui.models.users import Users
 from open_webui.config import WEBUI_AUTH
@@ -144,44 +147,8 @@ async def update_password(
 
 @router.post("/signin", response_model=SessionUserResponse)
 async def signin(request: Request, response: Response, form_data: SigninForm):
-    if WEBUI_AUTH_TRUSTED_EMAIL_HEADER:
-        if WEBUI_AUTH_TRUSTED_EMAIL_HEADER not in request.headers:
-            raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_TRUSTED_HEADER)
-
-        trusted_email = request.headers[WEBUI_AUTH_TRUSTED_EMAIL_HEADER].lower()
-        trusted_name = trusted_email
-        if WEBUI_AUTH_TRUSTED_NAME_HEADER:
-            trusted_name = request.headers.get(
-                WEBUI_AUTH_TRUSTED_NAME_HEADER, trusted_email
-            )
-        if not Users.get_user_by_email(trusted_email.lower()):
-            await signup(
-                request,
-                response,
-                SignupForm(
-                    email=trusted_email, password=str(uuid.uuid4()), name=trusted_name
-                ),
-            )
-        user = Auths.authenticate_user_by_trusted_header(trusted_email)
-    elif WEBUI_AUTH == False:
-        admin_email = "admin@localhost"
-        admin_password = "admin"
-
-        if Users.get_user_by_email(admin_email.lower()):
-            user = Auths.authenticate_user(admin_email.lower(), admin_password)
-        else:
-            if Users.get_num_users() != 0:
-                raise HTTPException(400, detail=ERROR_MESSAGES.EXISTING_USERS)
-
-            await signup(
-                request,
-                response,
-                SignupForm(email=admin_email, password=admin_password, name="User"),
-            )
-
-            user = Auths.authenticate_user(admin_email.lower(), admin_password)
-    else:
-        user = Auths.authenticate_user(form_data.email.lower(), form_data.password)
+    
+    user = Auths.authenticate_user(form_data.email.lower(), form_data.password)
 
     if user:
 
@@ -220,6 +187,7 @@ async def signin(request: Request, response: Response, form_data: SigninForm):
             "name": user.name,
             "role": user.role,
             "profile_image_url": user.profile_image_url,
+            "auth_url": ""
         }
     else:
         raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
@@ -261,12 +229,14 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
             else request.app.state.config.DEFAULT_USER_ROLE
         )
         hashed = get_password_hash(form_data.password)
+        code = pyotp.random_base32()
         user = Auths.insert_new_auth(
             form_data.email.lower(),
             hashed,
             form_data.name,
             form_data.profile_image_url,
             role,
+            code
         )
 
         if user:
@@ -307,6 +277,8 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
                     },
                 )
 
+            auth_url = pyotp.totp.TOTP(code).provisioning_uri(name=user.name, issuer_name="Open WebUI")
+
             return {
                 "token": token,
                 "token_type": "Bearer",
@@ -316,11 +288,45 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
                 "name": user.name,
                 "role": user.role,
                 "profile_image_url": user.profile_image_url,
+                "auth_url": auth_url
             }
         else:
             raise HTTPException(500, detail=ERROR_MESSAGES.CREATE_USER_ERROR)
     except Exception as err:
         raise HTTPException(500, detail=ERROR_MESSAGES.DEFAULT(err))
+    
+
+############################
+# verify
+############################
+
+
+@router.post("/verify", response_model=VerifyUserResponse)
+async def verify(
+    request: Request, response: Response, form_data: VerifyForm, user=Depends(get_current_user)
+):
+    if user:
+        expires_delta = parse_duration(request.app.state.config.JWT_EXPIRES_IN)
+        expires_at = None
+        if expires_delta:
+            expires_at = int(time.time()) + int(expires_delta.total_seconds())
+
+        totp = pyotp.TOTP(user.code)
+        ret = totp.verify(form_data.auth_code)
+        if ret:
+            return {
+                "token_type": "Bearer",
+                "expires_at": expires_at,
+                "id": user.id,
+                "email": user.email,
+                "name": user.name,
+                "role": user.role,
+                "profile_image_url": user.profile_image_url
+            }
+        else:
+            raise HTTPException(500, detail=ERROR_MESSAGES.INVALID_AUTH_CODE)
+    else:
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
 
 
 @router.get("/signout")

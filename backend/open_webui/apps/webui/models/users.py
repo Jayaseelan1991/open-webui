@@ -19,6 +19,7 @@ class User(Base):
     email = Column(String)
     role = Column(String)
     profile_image_url = Column(Text)
+    
 
     last_active_at = Column(BigInteger)
     updated_at = Column(BigInteger)
@@ -29,7 +30,7 @@ class User(Base):
     info = Column(JSONField, nullable=True)
 
     oauth_sub = Column(Text, unique=True)
-
+    code = Column(Text)
 
 class UserSettings(BaseModel):
     ui: Optional[dict] = {}
@@ -55,6 +56,8 @@ class UserModel(BaseModel):
     oauth_sub: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    code: str = "0"
 
 
 ####################
@@ -82,7 +85,8 @@ class UsersTable:
         email: str,
         profile_image_url: str = "/user.png",
         role: str = "pending",
-        oauth_sub: Optional[str] = None,
+        code: str = "0",
+        oauth_sub: Optional[str] = None
     ) -> Optional[UserModel]:
         with get_db() as db:
             user = UserModel(
@@ -96,6 +100,7 @@ class UsersTable:
                     "created_at": int(time.time()),
                     "updated_at": int(time.time()),
                     "oauth_sub": oauth_sub,
+                    "code": code
                 }
             )
             result = User(**user.model_dump())

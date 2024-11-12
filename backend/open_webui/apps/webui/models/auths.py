@@ -24,6 +24,7 @@ class Auth(Base):
     email = Column(String)
     password = Column(Text)
     active = Column(Boolean)
+    code = Column(Text)
 
 
 class AuthModel(BaseModel):
@@ -31,7 +32,7 @@ class AuthModel(BaseModel):
     email: str
     password: str
     active: bool = True
-
+    code: str
 
 ####################
 # Forms
@@ -53,7 +54,14 @@ class UserResponse(BaseModel):
     name: str
     role: str
     profile_image_url: str
+    auth_url: str
 
+class VerifyUserResponse(BaseModel):
+    id: str
+    email: str
+    name: str
+    role: str
+    profile_image_url: str
 
 class SigninResponse(Token, UserResponse):
     pass
@@ -84,6 +92,8 @@ class SignupForm(BaseModel):
     password: str
     profile_image_url: Optional[str] = "/user.png"
 
+class VerifyForm(BaseModel):
+    auth_code: str
 
 class AddUserForm(SignupForm):
     role: Optional[str] = "pending"
@@ -97,7 +107,8 @@ class AuthsTable:
         name: str,
         profile_image_url: str = "/user.png",
         role: str = "pending",
-        oauth_sub: Optional[str] = None,
+        code: str = "0",
+        oauth_sub: Optional[str] = None
     ) -> Optional[UserModel]:
         with get_db() as db:
             log.info("insert_new_auth")
@@ -105,13 +116,13 @@ class AuthsTable:
             id = str(uuid.uuid4())
 
             auth = AuthModel(
-                **{"id": id, "email": email, "password": password, "active": True}
+                **{"id": id, "email": email, "password": password, "active": True, "code": code}
             )
             result = Auth(**auth.model_dump())
             db.add(result)
 
             user = Users.insert_new_user(
-                id, name, email, profile_image_url, role, oauth_sub
+                id, name, email, profile_image_url, role, code, oauth_sub
             )
 
             db.commit()
