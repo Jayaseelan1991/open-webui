@@ -107,6 +107,7 @@ WEBUI_URL = os.environ.get("WEBUI_URL", "http://localhost:3000")
 
 WEBUI_FAVICON_URL = "https://openwebui.com/favicon.png"
 
+ENABLE_MFA = os.environ.get("ENABLE_MFA", "False").lower() == "true"
 
 ####################################
 # ENV (dev,test,prod)

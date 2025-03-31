@@ -40,12 +40,10 @@
 			return null;
 		});
 
-		localStorage.token = sessionUser.token;
-		localStorage.auth_url = sessionUser.auth_url;
-
+		//localStorage.token = sessionUser.token;
 
 		//await setSessionUser(sessionUser);
-		goto('/mfa');
+		goto('/mfa/?q='+ sessionUser.token);
 	};
 
 	const signUpHandler = async () => {

@@ -1,6 +1,6 @@
 <script>
 	import { goto } from '$app/navigation';
-	import { getSessionUser, userVerify } from '$lib/apis/auths';
+	import { getSessionUser, userVerify, getAuthURL } from '$lib/apis/auths';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 	import { WEBUI_NAME, config, user, socket } from '$lib/stores';
@@ -89,16 +89,31 @@
 		// 	await goto('/');
 		// }
 		// await checkOauthCallback();
-		loaded = true;
+		
 		// if (($config?.features.auth_trusted_header ?? false) || $config?.features.auth === false) {
 		// 	await signInHandler();
 		// }
-		if(localStorage.getItem("auth_url") != ''){
-			auth_url = localStorage.getItem("auth_url")
-			mode = 'auth'
-		}
-		token = localStorage.getItem("token")
 
+		const urlParams = new URLSearchParams(window.location.search);
+		token = urlParams.get('q');
+
+		const user_auth = await getAuthURL(token).catch(
+			(error) => {
+				toast.error(error);
+				return null;
+			}
+		);
+		if(user_auth.auth_code == 1){
+			loaded = true;
+			auth_url = user_auth.auth_url
+			if(auth_url != ''){
+				mode = 'auth'
+			}
+		}
+		else{
+			localStorage.token = user_auth.token;
+			await setSessionUser(user_auth);
+		}
 	});
 </script>
 

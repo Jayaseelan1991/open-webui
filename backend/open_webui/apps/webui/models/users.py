@@ -19,7 +19,6 @@ class User(Base):
     email = Column(String)
     role = Column(String)
     profile_image_url = Column(Text)
-    
 
     last_active_at = Column(BigInteger)
     updated_at = Column(BigInteger)
@@ -30,7 +29,7 @@ class User(Base):
     info = Column(JSONField, nullable=True)
 
     oauth_sub = Column(Text, unique=True)
-    code = Column(Text)
+    mfa = Column(BigInteger)
 
 class UserSettings(BaseModel):
     ui: Optional[dict] = {}
@@ -57,8 +56,7 @@ class UserModel(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    code: str = "0"
-
+    mfa: int
 
 ####################
 # Forms
@@ -85,7 +83,6 @@ class UsersTable:
         email: str,
         profile_image_url: str = "/user.png",
         role: str = "pending",
-        code: str = "0",
         oauth_sub: Optional[str] = None
     ) -> Optional[UserModel]:
         with get_db() as db:
@@ -100,7 +97,7 @@ class UsersTable:
                     "created_at": int(time.time()),
                     "updated_at": int(time.time()),
                     "oauth_sub": oauth_sub,
-                    "code": code
+                    "mfa":0
                 }
             )
             result = User(**user.model_dump())
@@ -259,6 +256,17 @@ class UsersTable:
             with get_db() as db:
                 user = db.query(User).filter_by(id=id).first()
                 return user.api_key
+        except Exception:
+            return None
+        
+    def update_mfa_by_id(self, id: str, mfa: str) -> Optional[UserModel]:
+        try:
+            with get_db() as db:
+                db.query(User).filter_by(id=id).update({"mfa": mfa})
+                db.commit()
+
+                user = db.query(User).filter_by(id=id).first()
+                return UserModel.model_validate(user)
         except Exception:
             return None
 

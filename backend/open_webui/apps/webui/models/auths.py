@@ -54,7 +54,6 @@ class UserResponse(BaseModel):
     name: str
     role: str
     profile_image_url: str
-    auth_url: str
 
 class VerifyUserResponse(BaseModel):
     id: str
@@ -105,9 +104,9 @@ class AuthsTable:
         email: str,
         password: str,
         name: str,
+        code: str,
         profile_image_url: str = "/user.png",
         role: str = "pending",
-        code: str = "0",
         oauth_sub: Optional[str] = None
     ) -> Optional[UserModel]:
         with get_db() as db:
@@ -122,7 +121,7 @@ class AuthsTable:
             db.add(result)
 
             user = Users.insert_new_user(
-                id, name, email, profile_image_url, role, code, oauth_sub
+                id, name, email, profile_image_url, role, oauth_sub
             )
 
             db.commit()
@@ -144,6 +143,18 @@ class AuthsTable:
                         return user
                     else:
                         return None
+                else:
+                    return None
+        except Exception:
+            return None
+        
+    def get_auth_code(self, email: str) -> str:
+        log.info(f"get_auth_code: {email}")
+        try:
+            with get_db() as db:
+                auth = db.query(Auth).filter_by(email=email, active=True).first()
+                if auth:
+                    return auth.code
                 else:
                     return None
         except Exception:
@@ -205,6 +216,15 @@ class AuthsTable:
                     return True
                 else:
                     return False
+        except Exception:
+            return False
+        
+    def update_code_by_id(self, id: str, code: str) -> bool:
+        try:
+            with get_db() as db:
+                result = db.query(Auth).filter_by(id=id).update({"code": code})
+                db.commit()
+                return True if result == 1 else False
         except Exception:
             return False
 
