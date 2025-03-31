@@ -24,6 +24,7 @@ class Auth(Base):
     email = Column(String)
     password = Column(Text)
     active = Column(Boolean)
+    code = Column(Text)
 
 
 class AuthModel(BaseModel):
@@ -31,7 +32,7 @@ class AuthModel(BaseModel):
     email: str
     password: str
     active: bool = True
-
+    code: str
 
 ####################
 # Forms
@@ -54,6 +55,12 @@ class UserResponse(BaseModel):
     role: str
     profile_image_url: str
 
+class VerifyUserResponse(BaseModel):
+    id: str
+    email: str
+    name: str
+    role: str
+    profile_image_url: str
 
 class SigninResponse(Token, UserResponse):
     pass
@@ -84,6 +91,8 @@ class SignupForm(BaseModel):
     password: str
     profile_image_url: Optional[str] = "/user.png"
 
+class VerifyForm(BaseModel):
+    auth_code: str
 
 class AddUserForm(SignupForm):
     role: Optional[str] = "pending"
@@ -95,9 +104,10 @@ class AuthsTable:
         email: str,
         password: str,
         name: str,
+        code: str,
         profile_image_url: str = "/user.png",
         role: str = "pending",
-        oauth_sub: Optional[str] = None,
+        oauth_sub: Optional[str] = None
     ) -> Optional[UserModel]:
         with get_db() as db:
             log.info("insert_new_auth")
@@ -105,7 +115,7 @@ class AuthsTable:
             id = str(uuid.uuid4())
 
             auth = AuthModel(
-                **{"id": id, "email": email, "password": password, "active": True}
+                **{"id": id, "email": email, "password": password, "active": True, "code": code}
             )
             result = Auth(**auth.model_dump())
             db.add(result)
@@ -133,6 +143,18 @@ class AuthsTable:
                         return user
                     else:
                         return None
+                else:
+                    return None
+        except Exception:
+            return None
+        
+    def get_auth_code(self, email: str) -> str:
+        log.info(f"get_auth_code: {email}")
+        try:
+            with get_db() as db:
+                auth = db.query(Auth).filter_by(email=email, active=True).first()
+                if auth:
+                    return auth.code
                 else:
                     return None
         except Exception:
@@ -194,6 +216,15 @@ class AuthsTable:
                     return True
                 else:
                     return False
+        except Exception:
+            return False
+        
+    def update_code_by_id(self, id: str, code: str) -> bool:
+        try:
+            with get_db() as db:
+                result = db.query(Auth).filter_by(id=id).update({"code": code})
+                db.commit()
+                return True if result == 1 else False
         except Exception:
             return False
 

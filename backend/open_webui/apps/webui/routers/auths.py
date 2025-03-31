@@ -2,6 +2,8 @@ import re
 import uuid
 import time
 import datetime
+import pyotp
+from rich import _console
 
 from open_webui.apps.webui.models.auths import (
     AddUserForm,
@@ -11,9 +13,11 @@ from open_webui.apps.webui.models.auths import (
     SigninForm,
     SigninResponse,
     SignupForm,
+    VerifyForm,
     UpdatePasswordForm,
     UpdateProfileForm,
     UserResponse,
+    VerifyUserResponse,
 )
 from open_webui.apps.webui.models.users import Users
 from open_webui.config import WEBUI_AUTH
@@ -23,6 +27,7 @@ from open_webui.env import (
     WEBUI_AUTH_TRUSTED_NAME_HEADER,
     WEBUI_SESSION_COOKIE_SAME_SITE,
     WEBUI_SESSION_COOKIE_SECURE,
+    ENABLE_MFA
 )
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response
@@ -144,44 +149,8 @@ async def update_password(
 
 @router.post("/signin", response_model=SessionUserResponse)
 async def signin(request: Request, response: Response, form_data: SigninForm):
-    if WEBUI_AUTH_TRUSTED_EMAIL_HEADER:
-        if WEBUI_AUTH_TRUSTED_EMAIL_HEADER not in request.headers:
-            raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_TRUSTED_HEADER)
-
-        trusted_email = request.headers[WEBUI_AUTH_TRUSTED_EMAIL_HEADER].lower()
-        trusted_name = trusted_email
-        if WEBUI_AUTH_TRUSTED_NAME_HEADER:
-            trusted_name = request.headers.get(
-                WEBUI_AUTH_TRUSTED_NAME_HEADER, trusted_email
-            )
-        if not Users.get_user_by_email(trusted_email.lower()):
-            await signup(
-                request,
-                response,
-                SignupForm(
-                    email=trusted_email, password=str(uuid.uuid4()), name=trusted_name
-                ),
-            )
-        user = Auths.authenticate_user_by_trusted_header(trusted_email)
-    elif WEBUI_AUTH == False:
-        admin_email = "admin@localhost"
-        admin_password = "admin"
-
-        if Users.get_user_by_email(admin_email.lower()):
-            user = Auths.authenticate_user(admin_email.lower(), admin_password)
-        else:
-            if Users.get_num_users() != 0:
-                raise HTTPException(400, detail=ERROR_MESSAGES.EXISTING_USERS)
-
-            await signup(
-                request,
-                response,
-                SignupForm(email=admin_email, password=admin_password, name="User"),
-            )
-
-            user = Auths.authenticate_user(admin_email.lower(), admin_password)
-    else:
-        user = Auths.authenticate_user(form_data.email.lower(), form_data.password)
+    
+    user = Auths.authenticate_user(form_data.email.lower(), form_data.password)
 
     if user:
 
@@ -220,6 +189,7 @@ async def signin(request: Request, response: Response, form_data: SigninForm):
             "name": user.name,
             "role": user.role,
             "profile_image_url": user.profile_image_url,
+            "auth_url": ""
         }
     else:
         raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
@@ -261,12 +231,14 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
             else request.app.state.config.DEFAULT_USER_ROLE
         )
         hashed = get_password_hash(form_data.password)
+        code = pyotp.random_base32()
         user = Auths.insert_new_auth(
             form_data.email.lower(),
             hashed,
             form_data.name,
             form_data.profile_image_url,
             role,
+            code
         )
 
         if user:
@@ -307,6 +279,8 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
                     },
                 )
 
+            auth_url = pyotp.totp.TOTP(code).provisioning_uri(name=user.name, issuer_name="Open WebUI")
+
             return {
                 "token": token,
                 "token_type": "Bearer",
@@ -316,11 +290,50 @@ async def signup(request: Request, response: Response, form_data: SignupForm):
                 "name": user.name,
                 "role": user.role,
                 "profile_image_url": user.profile_image_url,
+                "auth_url": auth_url
             }
         else:
             raise HTTPException(500, detail=ERROR_MESSAGES.CREATE_USER_ERROR)
     except Exception as err:
         raise HTTPException(500, detail=ERROR_MESSAGES.DEFAULT(err))
+    
+
+############################
+# verify
+############################
+
+
+@router.post("/verify", response_model=VerifyUserResponse)
+async def verify(
+    request: Request, response: Response, form_data: VerifyForm, user=Depends(get_current_user)
+):
+    if user:
+        auth_code = Auths.get_auth_code(user.email)
+        if auth_code:
+            totp = pyotp.TOTP(auth_code)
+            ret = totp.verify(form_data.auth_code)
+            if ret:
+                expires_delta = parse_duration(request.app.state.config.JWT_EXPIRES_IN)
+                expires_at = None
+                if expires_delta:
+                    expires_at = int(time.time()) + int(expires_delta.total_seconds())
+
+                Users.update_mfa_by_id(user.id,"1")
+                return {
+                    "token_type": "Bearer",
+                    "expires_at": expires_at,
+                    "id": user.id,
+                    "email": user.email,
+                    "name": user.name,
+                    "role": user.role,
+                    "profile_image_url": user.profile_image_url
+                }
+            else:
+                raise HTTPException(500, detail=ERROR_MESSAGES.INVALID_AUTH_CODE)
+        else:
+            raise HTTPException(500, detail=ERROR_MESSAGES.INVALID_AUTH_CODE)
+    else:
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
 
 
 @router.get("/signout")
@@ -347,12 +360,14 @@ async def add_user(form_data: AddUserForm, user=Depends(get_admin_user)):
     try:
         print(form_data)
         hashed = get_password_hash(form_data.password)
+        code = pyotp.random_base32()
         user = Auths.insert_new_auth(
             form_data.email.lower(),
             hashed,
             form_data.name,
+            code,
             form_data.profile_image_url,
-            form_data.role,
+            form_data.role
         )
 
         if user:
@@ -401,6 +416,70 @@ async def get_admin_details(request: Request, user=Depends(get_current_user)):
         }
     else:
         raise HTTPException(400, detail=ERROR_MESSAGES.ACTION_PROHIBITED)
+
+############################
+# GetAdminDetails
+############################
+
+
+@router.get("/getAuthURL")
+async def get_auth_url(request: Request, response: Response, user=Depends(get_current_user)):
+    auth_url = ""
+    print("ENABLE_MFA - " +  str(ENABLE_MFA))
+    if user:
+        if ENABLE_MFA:
+            auth_code = pyotp.random_base32()
+            #auth_code = Auths.get_auth_code(user.email)
+            if auth_code:
+                Auths.update_code_by_id(user.id,auth_code)
+                if user.mfa == 0:
+                    auth_url = pyotp.totp.TOTP(auth_code).provisioning_uri(name=user.name, issuer_name="Open WebUI")
+                return {
+                    "auth_code": int(ENABLE_MFA),
+                    "auth_url": auth_url
+                }
+            else:
+                raise HTTPException(500, detail=ERROR_MESSAGES.INVALID_AUTH_CODE)
+        else:
+            expires_delta = parse_duration(request.app.state.config.JWT_EXPIRES_IN)
+            expires_at = None
+            if expires_delta:
+                expires_at = int(time.time()) + int(expires_delta.total_seconds())
+
+            token = create_token(
+                data={"id": user.id},
+                expires_delta=expires_delta,
+            )
+
+            datetime_expires_at = (
+                datetime.datetime.fromtimestamp(expires_at, datetime.timezone.utc)
+                if expires_at
+                else None
+            )
+
+            # Set the cookie token
+            response.set_cookie(
+                key="token",
+                value=token,
+                expires=datetime_expires_at,
+                httponly=True,  # Ensures the cookie is not accessible via JavaScript
+                samesite=WEBUI_SESSION_COOKIE_SAME_SITE,
+                secure=WEBUI_SESSION_COOKIE_SECURE,
+            )
+
+            return {
+                "token": token,
+                "token_type": "Bearer",
+                "expires_at": expires_at,
+                "id": user.id,
+                "email": user.email,
+                "name": user.name,
+                "role": user.role,
+                "profile_image_url": user.profile_image_url,
+                "auth_code": int(ENABLE_MFA)
+            }
+    else:
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
 
 
 ############################
